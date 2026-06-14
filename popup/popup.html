@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>YouTube Ad Skipper</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="container">
+
+    <!-- Header -->
+    <div class="header">
+      <img src="../icons/icon48.png" alt="logo" class="logo" />
+      <div class="header-text">
+        <h1>Ad Skipper</h1>
+        <p class="subtitle">YouTube Auto-Skip</p>
+      </div>
+    </div>
+
+    <!-- Toggle row -->
+    <div class="card toggle-card">
+      <div class="toggle-row">
+        <div class="toggle-info">
+          <span class="toggle-label">Auto-Skip</span>
+          <span id="status-text" class="status-badge enabled">Active</span>
+        </div>
+        <label class="switch" aria-label="Toggle auto-skip">
+          <input type="checkbox" id="toggle" checked />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <p id="toggle-description" class="toggle-desc">
+        Automatically clicks Skip Ad within 3 seconds.
+      </p>
+    </div>
+
+    <!-- Stats row -->
+    <div class="card stats-card">
+      <div class="stat">
+        <span class="stat-value" id="skip-count">0</span>
+        <span class="stat-label">Ads skipped<br />this session</span>
+      </div>
+      <div class="divider"></div>
+      <div class="stat">
+        <span class="stat-value" id="status-icon">✓</span>
+        <span class="stat-label">Extension<br />status</span>
+      </div>
+    </div>
+
+    <!-- Reset link -->
+    <button class="reset-btn" id="reset-btn" title="Reset session count">
+      Reset session count
+    </button>
+
+    <!-- Footer -->
+    <div class="footer">
+      v1.0.0 &nbsp;•&nbsp; Personal use only
+    </div>
+
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+# Python icon generator — not needed for the extension itself
+generate_icons.py
+__pycache__/
+*.pyc
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor folders
+.vscode/
+.idea/
+
+# Temp / log files
+*.log
+*.tmp
