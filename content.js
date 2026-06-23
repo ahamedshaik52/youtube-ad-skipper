@@ -1,10 +1,26 @@
 // ============================================================
-// content.js — Core skip logic for YouTube Ad Skipper v1.0.2
+// content.js — Core skip logic for YouTube Ad Skipper v1.0.3
 // Injected into every youtube.com tab by the manifest.
 // ============================================================
 
 (function () {
   'use strict';
+
+  // Guard: stop immediately if the extension runtime is already gone
+  if (typeof chrome === 'undefined' || !chrome.runtime?.id) return;
+
+  // ---- Chrome API Safety ----------------------------------------------------
+  function isContextValid() {
+    try { return typeof chrome !== 'undefined' && !!chrome.runtime?.id; } catch (_) { return false; }
+  }
+  function safeStorageGet(keys, cb) {
+    if (!isContextValid()) return;
+    try { chrome.storage.local.get(keys, cb); } catch (_) {}
+  }
+  function safeStorageSet(data) {
+    if (!isContextValid()) return;
+    try { chrome.storage.local.set(data); } catch (_) {}
+  }
 
   // ---- State ----------------------------------------------------------------
   let isEnabled          = true;   // mirrors chrome.storage setting
@@ -20,7 +36,7 @@
   // ---- Bootstrap ------------------------------------------------------------
 
   function init() {
-    chrome.storage.local.get([STORAGE_KEY_ENABLED, STORAGE_KEY_COUNT], (result) => {
+    safeStorageGet([STORAGE_KEY_ENABLED, STORAGE_KEY_COUNT], (result) => {
       isEnabled    = result[STORAGE_KEY_ENABLED] !== false;
       sessionCount = result[STORAGE_KEY_COUNT]   || 0;
       log(`Initialized. Enabled: ${isEnabled}. Session skips: ${sessionCount}`);
@@ -28,6 +44,7 @@
     });
 
     chrome.storage.onChanged.addListener((changes) => {
+      if (!isContextValid()) return;
       if (STORAGE_KEY_ENABLED in changes) {
         isEnabled = changes[STORAGE_KEY_ENABLED].newValue !== false;
         log(`State → ${isEnabled ? 'ENABLED' : 'DISABLED'}`);
@@ -208,9 +225,6 @@
 
   // ---- Click & Verification -------------------------------------------------
 
-  // FIX #2: use full pointer + mouse event sequence (YouTube listens to pointerdown)
-  // FIX #1: counter only increments in verifySkip() AFTER confirming the ad stopped
-  // FIX #3: set clickCooldownUntil to block re-clicking for 4 seconds
   function performClick(scheduledBtn) {
     if (!isEnabled) return;
 
@@ -219,58 +233,63 @@
       return;
     }
 
-    // Re-find the button at click-time — DOM may have changed during the 300ms delay
     const btn = findSkipButton() || scheduledBtn;
-    if (!btn || !isVisible(btn)) {
-      log('Skip button gone at click time. Aborting.');
-      return;
+
+    log(`Firing skip... (button: ${btn ? btn.className.split(' ').slice(0,2).join('.') : 'none'})`);
+
+    // Method 1 (primary): seek the ad video to its end.
+    // This bypasses the isTrusted restriction entirely — no event dispatch needed.
+    trySeekSkip();
+
+    // Method 2 (fallback): dispatch full pointer+mouse event chain.
+    // YouTube's handler may still honour this on some ad types.
+    if (btn && isVisible(btn)) {
+      const rect = btn.getBoundingClientRect();
+      const cx   = rect.left + rect.width  / 2;
+      const cy   = rect.top  + rect.height / 2;
+      const eventProps = { bubbles: true, cancelable: true, view: window, detail: 1, clientX: cx, clientY: cy };
+      try {
+        ['pointerover', 'pointerenter', 'mouseover', 'mouseenter',
+         'pointermove', 'mousemove', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'
+        ].forEach(type => {
+          try { btn.dispatchEvent(new MouseEvent(type, eventProps)); } catch (_) {}
+        });
+        btn.click();
+      } catch (_) {}
+
+      const roleParent = btn.closest('[role="button"]');
+      if (roleParent && roleParent !== btn) {
+        try { roleParent.dispatchEvent(new MouseEvent('click', eventProps)); } catch (_) {}
+        try { roleParent.click(); } catch (_) {}
+      }
     }
 
-    const rect = btn.getBoundingClientRect();
-    const cx   = rect.left + rect.width  / 2;
-    const cy   = rect.top  + rect.height / 2;
-
-    log(`Firing click on <${btn.tagName.toLowerCase()}> class="${[...btn.classList].slice(0, 3).join(' ')}")`);
-
-    // Fire the full event chain YouTube uses for interactive elements
-    const eventProps = { bubbles: true, cancelable: true, view: window, detail: 1, clientX: cx, clientY: cy };
-    ['pointerover', 'pointerenter', 'mouseover', 'mouseenter',
-     'pointermove', 'mousemove',
-     'pointerdown', 'mousedown',
-     'pointerup',   'mouseup',
-     'click'
-    ].forEach(type => {
-      try { btn.dispatchEvent(new MouseEvent(type, eventProps)); } catch (_) {}
-    });
-
-    // Also try native .click() as a belt-and-suspenders fallback
-    try { btn.click(); } catch (_) {}
-
-    // If the button is nested, also fire click on the nearest role=button ancestor
-    const roleParent = btn.closest('[role="button"]');
-    if (roleParent && roleParent !== btn) {
-      try { roleParent.dispatchEvent(new MouseEvent('click', eventProps)); } catch (_) {}
-      try { roleParent.click(); } catch (_) {}
-    }
-
-    // FIX #3: block new click attempts for CLICK_COOLDOWN_MS regardless of outcome
     clickCooldownUntil = Date.now() + CLICK_COOLDOWN_MS;
-
-    // FIX #1: verify the skip worked; ONLY then increment the counter
     setTimeout(verifySkip, CLICK_VERIFY_DELAY_MS);
+  }
+
+  // Seek the playing video to its end — skips the ad without dispatching events.
+  // Works because HTMLVideoElement.currentTime is a plain property, not an event handler.
+  function trySeekSkip() {
+    const player = document.querySelector(PLAYER_SELECTOR);
+    if (!player) return false;
+    const video = player.querySelector('video');
+    if (!video || video.paused) return false;
+    if (!isFinite(video.duration) || video.duration <= 0) return false;
+    const target = Math.max(video.duration - 0.1, video.currentTime + 0.1);
+    log(`Seek-skip: ${video.currentTime.toFixed(1)}s → ${target.toFixed(1)}s (ad duration: ${video.duration.toFixed(1)}s)`);
+    try { video.currentTime = target; } catch (_) { return false; }
+    return true;
   }
 
   function verifySkip() {
     if (isAdPlaying()) {
-      // Ad is still playing — our click had no effect
-      log('WARN: Ad still playing after click. Click did not register. Cooldown active, will retry.');
-      // Cooldown is still set — next attempt will happen after it expires
+      log('WARN: Ad still playing after skip attempt. Cooldown active, will retry.');
     } else {
-      // Ad stopped — skip was successful
       sessionCount++;
       log(`SUCCESS: Ad skipped! Session total: ${sessionCount}`);
-      chrome.storage.local.set({ [STORAGE_KEY_COUNT]: sessionCount });
-      clickCooldownUntil = 0; // clear cooldown — ready for next ad immediately
+      safeStorageSet({ [STORAGE_KEY_COUNT]: sessionCount });
+      clickCooldownUntil = 0;
     }
   }
 

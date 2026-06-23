@@ -48,8 +48,9 @@ const CLICK_DELAY_MS = 300;
 // Prevents the ad-countdown DOM update (fires every ~1 s) from re-triggering the loop.
 const CLICK_COOLDOWN_MS = 4000;
 
-// How long after a click to wait before checking whether the ad stopped.
-const CLICK_VERIFY_DELAY_MS = 1000;
+// How long after a skip attempt to wait before checking whether the ad stopped.
+// 2000ms gives the player time to fully transition out of ad state.
+const CLICK_VERIFY_DELAY_MS = 2000;
 
 // Debounce delay (ms) for MutationObserver callbacks to avoid rapid re-firing
 const OBSERVER_DEBOUNCE_MS = 80;

@@ -5,6 +5,32 @@ When YouTube changes its UI and skipping breaks, update `constants.js` and add a
 
 ---
 
+## [1.0.3] — 2026-06-23
+
+### Fixed
+
+**Root cause: YouTube ignores synthetic click events (`isTrusted: false`)**
+- `new MouseEvent()` and `.click()` dispatched from a content script always have `isTrusted: false`
+- YouTube's modern skip button handler checks `event.isTrusted` and silently rejects synthetic events
+- This caused the button to be found correctly but the click to have no effect
+
+**Fix 1 — `trySeekSkip()`: seek the video to its end (primary skip method)**
+- `HTMLVideoElement.currentTime` is a plain DOM property — no event dispatch, no `isTrusted` check
+- `video.currentTime = video.duration - 0.1` immediately ends the ad and triggers the next item
+- Called first in `performClick()` before the synthetic click fallback
+
+**Fix 2 — Extension context invalidated error**
+- When the extension is reloaded while a YouTube tab is open, the old content script becomes orphaned
+- Calling `chrome.storage.local.*` on an orphaned script throws "Extension context invalidated"
+- Added `isContextValid()` guard and `safeStorageGet()` / `safeStorageSet()` wrappers
+- Also added upfront runtime guard at IIFE start — orphaned scripts now exit immediately
+
+### Changed
+- `CLICK_VERIFY_DELAY_MS` increased from 1000ms to 2000ms (gives player more time to clear ad state)
+- `performClick()` now calls `trySeekSkip()` first, then falls back to synthetic click chain
+
+---
+
 ## [1.0.2] — 2026-06-23
 
 ### Fixed
