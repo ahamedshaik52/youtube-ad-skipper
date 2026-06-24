@@ -290,6 +290,8 @@
       log(`SUCCESS: Ad skipped! Session total: ${sessionCount}`);
       safeStorageSet({ [STORAGE_KEY_COUNT]: sessionCount });
       clickCooldownUntil = 0;
+      // Immediately check for a consecutive ad ("Ad 1 of 2" → "Ad 2 of 2" pod case)
+      setTimeout(evaluate, 300);
     }
   }
 
