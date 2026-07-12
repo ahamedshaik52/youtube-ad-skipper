@@ -15,8 +15,7 @@ const SKIP_SELECTORS = [
   '.ytp-ad-skip-button-container .ytp-button',
   '.ytp-ad-skip-button-container button',
   // Legacy fallbacks
-  '.videoAdUiSkipButton',
-  '.ytp-ad-overlay-close-button'
+  '.videoAdUiSkipButton'
 ];
 
 // Regex patterns that identify countdown text — button is NOT yet clickable.
@@ -28,29 +27,19 @@ const COUNTDOWN_PATTERNS = [
   /^\d+$/,                        // bare digit only
 ];
 
-// Selectors that confirm an ad is actively playing
-const AD_SELECTORS = [
-  '.ytp-ad-player-overlay',
-  '.ytp-ad-module',
-  '.ytp-ad-text',
-  '.ad-showing'   // class sometimes on <body> not just <html>
-];
-
-// The YouTube player container — observer is scoped to this element
+// The YouTube player container — observer is scoped to this element.
+// The player carries the `ad-showing` class while any ad is playing.
 const PLAYER_SELECTOR = '#movie_player';
 
 // ---- Timing ----------------------------------------------------------------
 
-// How long to wait (ms) after detecting the skip button before clicking.
-const CLICK_DELAY_MS = 300;
+// Minimum gap (ms) between skip attempts while an ad is on screen.
+// Low = reacts fast to end cards and "Ad 2 of 2" pods without hammering the CPU.
+const ATTEMPT_INTERVAL_MS = 500;
 
-// After a click attempt (successful or not), block further clicks for this many ms.
-// Prevents the ad-countdown DOM update (fires every ~1 s) from re-triggering the loop.
-const CLICK_COOLDOWN_MS = 4000;
-
-// How long after a skip attempt to wait before checking whether the ad stopped.
-// 2000ms gives the player time to fully transition out of ad state.
-const CLICK_VERIFY_DELAY_MS = 2000;
+// How long after a skip attempt to recheck whether the ad state cleared.
+// If still in ad state, another attempt fires; if clear, the counter increments.
+const CLICK_VERIFY_DELAY_MS = 1200;
 
 // Debounce delay (ms) for MutationObserver callbacks to avoid rapid re-firing
 const OBSERVER_DEBOUNCE_MS = 80;

@@ -1,5 +1,5 @@
 // ============================================================
-// content.js — Core skip logic for YouTube Ad Skipper v1.0.4
+// content.js — Core skip logic for YouTube Ad Skipper v1.0.5
 // Injected into every youtube.com tab by the manifest.
 // ============================================================
 
@@ -23,15 +23,15 @@
   }
 
   // ---- State ----------------------------------------------------------------
-  let isEnabled          = true;   // mirrors chrome.storage setting
-  let observer           = null;   // active MutationObserver on #movie_player
-  let sessionCount       = 0;      // ads CONFIRMED skipped this session
-  let clickScheduled     = false;  // prevents duplicate scheduled clicks
-  let clickCooldownUntil = 0;      // FIX #3: timestamp — no new clicks before this
-  let attachRetries      = 0;
-  let debounceTimer      = null;
-  let domWatcher         = null;
-  let retryTimer         = null;
+  let isEnabled     = true;   // mirrors chrome.storage setting
+  let observer      = null;   // active MutationObserver on #movie_player
+  let sessionCount  = 0;      // ad breaks CONFIRMED skipped this session
+  let nextAttemptAt = 0;      // throttle: no skip attempts before this timestamp
+  let verifyTimer   = null;   // pending verify/recheck timer
+  let attachRetries = 0;
+  let debounceTimer = null;
+  let domWatcher    = null;
+  let retryTimer    = null;
 
   // ---- Bootstrap ------------------------------------------------------------
 
@@ -39,7 +39,7 @@
     safeStorageGet([STORAGE_KEY_ENABLED, STORAGE_KEY_COUNT], (result) => {
       isEnabled    = result[STORAGE_KEY_ENABLED] !== false;
       sessionCount = result[STORAGE_KEY_COUNT]   || 0;
-      log(`Initialized. Enabled: ${isEnabled}. Session skips: ${sessionCount}`);
+      log(`Initialized (v1.0.5). Enabled: ${isEnabled}. Session skips: ${sessionCount}`);
       if (isEnabled) scheduleAttach();
     });
 
@@ -62,8 +62,8 @@
     if (!isEnabled) return;
     log('SPA navigation — re-attaching observer...');
     detachObserver();
-    attachRetries      = 0;
-    clickCooldownUntil = 0; // reset cooldown on video change
+    attachRetries = 0;
+    nextAttemptAt = 0;
     setTimeout(scheduleAttach, SPA_REATTACH_DELAY_MS);
   }
 
@@ -130,177 +130,142 @@
       attributes: true, attributeFilter: ['class', 'style']
     });
     log('Observer attached to #movie_player.');
+    evaluate(); // an ad may already be playing right now
   }
 
   function detachObserver() {
     if (observer) { observer.disconnect(); observer = null; log('Observer detached.'); }
     stopDomWatcher();
     clearTimeout(retryTimer);
-    clickScheduled = false;
     clearTimeout(debounceTimer);
+    clearTimeout(verifyTimer);
+    verifyTimer = null;
   }
 
   // ---- Mutation Callback ----------------------------------------------------
 
   function onMutation() {
-    if (!isEnabled)  return;
-    if (clickScheduled) return;
-    if (Date.now() < clickCooldownUntil) return; // FIX #3: respect cooldown
-
+    if (!isEnabled) return;
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(evaluate, OBSERVER_DEBOUNCE_MS);
   }
 
-  // ---- Core Detection Logic -------------------------------------------------
+  // ---- Core Skip Logic --------------------------------------------------------
+  //
+  // Strategy (fast path, mimics an instant human click):
+  //  1. The moment the player enters ad state, click the Skip button if it
+  //     exists (plain element.click() — targets ONLY that element, safe).
+  //  2. Simultaneously seek the ad video to its end. This works even before
+  //     the skip button appears, so we never wait out the 5s countdown.
+  //  3. Re-attempt every ATTEMPT_INTERVAL_MS while the ad state persists
+  //     (covers end cards, "Ad 2 of 2" pods, and slow player transitions).
 
   function evaluate() {
-    if (!isEnabled || clickScheduled) return;
-    if (Date.now() < clickCooldownUntil) return; // FIX #3
+    if (!isEnabled) return;
 
-    if (!isAdPlaying()) return;
+    // Banner overlay ads can appear during normal playback (no ad-showing class)
+    const overlayBtn = document.querySelector('.ytp-ad-overlay-close-button');
+    if (overlayBtn && isVisible(overlayBtn)) {
+      log('Overlay banner ad — closing.');
+      try { overlayBtn.click(); } catch (_) {}
+    }
 
-    const skipBtn = findSkipButton();
-    if (!skipBtn) return;
+    if (!isAdShowing()) return;
+    if (Date.now() < nextAttemptAt) { scheduleVerify(); return; }
+    nextAttemptAt = Date.now() + ATTEMPT_INTERVAL_MS;
 
-    log(`Skip button ready: "${skipBtn.textContent.trim().slice(0, 40)}". Clicking in ${CLICK_DELAY_MS}ms.`);
-    clickScheduled = true;
-
-    setTimeout(() => {
-      clickScheduled = false;
-      performClick(skipBtn);
-    }, CLICK_DELAY_MS);
+    attemptSkip();
   }
 
-  // Layer 1 — Is an ad actively playing?
-  function isAdPlaying() {
-    if (document.documentElement.classList.contains('ad-showing')) return true;
-    if (document.body && document.body.classList.contains('ad-showing')) return true;
-    return AD_SELECTORS.some(sel => document.querySelector(sel) !== null);
+  // The player element carries the `ad-showing` class ONLY while an ad plays.
+  // This is the strict gate — we never touch video.currentTime outside ad state.
+  function isAdShowing() {
+    const player = document.querySelector(PLAYER_SELECTOR);
+    if (player && player.classList.contains('ad-showing')) return true;
+    return document.documentElement.classList.contains('ad-showing');
   }
 
-  // Layer 2 — Find the actual clickable skip button.
-  // FIX #4: filters out countdown state ("Skip in 5") before returning a match.
-  // FIX #5: searches [role="button"] and .ytp-button, not just <button>.
+  function attemptSkip() {
+    const player = document.querySelector(PLAYER_SELECTOR);
+    if (!player) return;
+
+    // 1) Click the Skip button if present — exactly like a human click on it.
+    //    element.click() dispatches directly to THIS element only: no screen
+    //    coordinates, so it can never be interpreted as a click on the ad.
+    const btn = findSkipButton();
+    if (btn) {
+      log(`Clicking skip button: "${btn.textContent.trim().slice(0, 30) || btn.className.split(' ')[0]}"`);
+      try { btn.click(); } catch (_) {}
+    }
+
+    // 2) Seek the ad video to its end — kills the ad instantly, even during
+    //    the countdown before the skip button appears, and for unskippable ads.
+    const video = player.querySelector('video');
+    if (video && isFinite(video.duration) && video.duration > 0 &&
+        video.currentTime < video.duration - 0.2) {
+      log(`Seek-skip: ${video.currentTime.toFixed(1)}s → end (${video.duration.toFixed(1)}s)`);
+      try { video.currentTime = video.duration; } catch (_) {}
+    }
+
+    scheduleVerify();
+  }
+
+  // Recheck shortly after an attempt: if the ad state is gone → count ONE skip
+  // for the whole ad break. If still in ad state (end card / next ad in pod) →
+  // loop back into evaluate for another attempt.
+  function scheduleVerify() {
+    if (verifyTimer) return;
+    verifyTimer = setTimeout(() => {
+      verifyTimer = null;
+      if (!isEnabled) return;
+      if (isAdShowing()) {
+        evaluate(); // still ads — keep going
+      } else {
+        sessionCount++;
+        log(`SUCCESS: Ad break skipped! Session total: ${sessionCount}`);
+        safeStorageSet({ [STORAGE_KEY_COUNT]: sessionCount });
+      }
+    }, CLICK_VERIFY_DELAY_MS);
+  }
+
+  // Find the actual clickable skip button (countdown state filtered out).
   function findSkipButton() {
-    // Try each primary selector
     for (const selector of SKIP_SELECTORS) {
       const el = document.querySelector(selector);
       if (!el || !isVisible(el)) continue;
-
       const text = el.textContent.trim();
-      if (isCountdownText(text)) {
-        log(`Countdown still running: "${text.slice(0, 30)}" — waiting.`);
-        continue;
-      }
-
-      log(`Matched selector "${selector}": "${text.slice(0, 30)}"`);
+      if (isCountdownText(text)) continue; // "Skip in 5" — not clickable yet
       return el;
     }
 
-    // Fallback: search inside #movie_player for any interactive element
-    // whose visible text says "Skip" but is NOT a countdown.
+    // Fallback: any interactive element inside the player whose text says "skip"
     const player = document.querySelector(PLAYER_SELECTOR);
     if (!player) return null;
-
-    // Include div[role="button"] and .ytp-button — YouTube uses these in modern UI
     const candidates = Array.from(
       player.querySelectorAll('button, [role="button"], .ytp-button')
     );
-
-    const found = candidates.find(el => {
+    return candidates.find(el => {
       if (!isVisible(el)) return false;
       const text = el.textContent.trim().toLowerCase();
       return text.includes('skip') && !isCountdownText(text);
-    });
-
-    if (found) log(`Text-fallback found: "${found.textContent.trim().slice(0, 40)}"`);
-    return found || null;
+    }) || null;
   }
 
-  // FIX #4: detect countdown text patterns — button is NOT yet clickable
   function isCountdownText(text) {
     if (!text) return false;
     return COUNTDOWN_PATTERNS.some(pattern => pattern.test(text));
-  }
-
-  // ---- Click & Verification -------------------------------------------------
-
-  function performClick(scheduledBtn) {
-    if (!isEnabled) return;
-    if (!isAdPlaying()) {
-      log('Ad ended naturally before click fired — no action needed.');
-      return;
-    }
-
-    const btn = findSkipButton() || scheduledBtn;
-    if (!btn) {
-      log('No skip button at click time — aborting.');
-      return;
-    }
-
-    // Overlay/banner ads (the "X" close button on bottom banners while video plays).
-    // These are not video-seeking targets — just close the overlay directly.
-    if (btn.closest('.ytp-ad-overlay-close-button') || btn.matches('.ytp-ad-overlay-close-button')) {
-      log('Overlay ad — closing directly.');
-      try { btn.click(); } catch (_) {}
-      clickCooldownUntil = Date.now() + CLICK_COOLDOWN_MS;
-      setTimeout(verifySkip, CLICK_VERIFY_DELAY_MS);
-      return;
-    }
-
-    // Video ads (skippable) — seek the video to its end.
-    //
-    // WHY NOT mouse events: coordinate-based MouseEvent dispatch (clientX/Y) is
-    // intercepted by YouTube's ad overlay BEFORE the skip button receives it,
-    // which registers as an ad click and navigates to the advertiser's URL.
-    // Setting video.currentTime is a plain property write — no events, no overlay.
-    log('Video ad — seeking to end.');
-    const seeked = trySeekSkip();
-    if (!seeked) {
-      log('Seek unavailable (video not ready or no duration). Retrying after cooldown.');
-    }
-
-    clickCooldownUntil = Date.now() + CLICK_COOLDOWN_MS;
-    setTimeout(verifySkip, CLICK_VERIFY_DELAY_MS);
-  }
-
-  // Seek the playing video to its end — no events, no isTrusted issue, no ad-click risk.
-  function trySeekSkip() {
-    const player = document.querySelector(PLAYER_SELECTOR);
-    if (!player) return false;
-    const video = player.querySelector('video');
-    if (!video) return false;
-    if (!isFinite(video.duration) || video.duration <= 0) return false;
-    const target = video.duration - 0.1;
-    if (video.currentTime >= target) return false; // already at end
-    log(`Seek-skip: ${video.currentTime.toFixed(1)}s → ${target.toFixed(1)}s (duration: ${video.duration.toFixed(1)}s)`);
-    try { video.currentTime = target; } catch (_) { return false; }
-    return true;
-  }
-
-  function verifySkip() {
-    if (isAdPlaying()) {
-      log('WARN: Ad still playing after skip attempt. Cooldown active, will retry.');
-    } else {
-      sessionCount++;
-      log(`SUCCESS: Ad skipped! Session total: ${sessionCount}`);
-      safeStorageSet({ [STORAGE_KEY_COUNT]: sessionCount });
-      clickCooldownUntil = 0;
-      // Immediately check for a consecutive ad ("Ad 1 of 2" → "Ad 2 of 2" pod case)
-      setTimeout(evaluate, 300);
-    }
   }
 
   // ---- Utilities ------------------------------------------------------------
 
   function isVisible(el) {
     if (!el) return false;
-    const rect  = el.getBoundingClientRect();
+    const rect = el.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return false;
     const style = window.getComputedStyle(el);
     return (
-      style.display     !== 'none'    &&
-      style.visibility  !== 'hidden'  &&
+      style.display    !== 'none'   &&
+      style.visibility !== 'hidden' &&
       parseFloat(style.opacity) > 0
     );
   }

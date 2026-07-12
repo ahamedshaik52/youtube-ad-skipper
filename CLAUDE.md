@@ -18,22 +18,22 @@ youtube-ad-skipper/
 └── CHANGELOG.md           # Version history — always update when bumping version
 ```
 
-## How the skip works
+## How the skip works (v1.0.5 engine)
 
 1. `MutationObserver` is scoped to `#movie_player` and fires on any DOM/attribute change
-2. Debounced 80ms → `evaluate()` checks two layers:
-   - `html.classList.contains('ad-showing')` (YouTube sets this during ads)
-   - Presence of any `AD_SELECTORS` element
-3. If an ad is playing, `findSkipButton()` searches `SKIP_SELECTORS` in priority order
-4. Countdown text ("Skip in 5") is filtered via `COUNTDOWN_PATTERNS` — button must be in clickable state
-5. **Primary skip method**: `trySeekSkip()` — sets `video.currentTime = video.duration - 0.1` on `#movie_player video`. This bypasses the `isTrusted` restriction that blocks synthetic click events.
-6. **Fallback**: full pointer+mouse event chain dispatched on the button element
-7. 1 second after skip: `verifySkip()` confirms ad stopped; only then increments counter
-8. On confirmed skip: immediately calls `evaluate()` again to catch consecutive ads (Ad 1 of 2 → Ad 2 of 2)
+2. Debounced 80ms → `evaluate()` gates on the strict ad signal: `#movie_player.ad-showing` class (never seek outside this state)
+3. `attemptSkip()` fires BOTH methods together, throttled to one attempt per 500ms:
+   - **Click**: `findSkipButton()` searches `SKIP_SELECTORS`; if a clickable (non-countdown) button exists → plain `btn.click()`. No coordinates, dispatches only to that element — behaves like a human click, can never hit the ad.
+   - **Seek**: `video.currentTime = video.duration` on the ad video — works even during the 5s countdown before the button appears, and on unskippable ads.
+4. `scheduleVerify()` rechecks 1.2s later: still in ad state (end card / "Ad 2 of 2" pod) → loop back and attempt again; ad state cleared → count ONE skip for the whole ad break.
+5. Overlay banner ads (during normal playback, no `ad-showing` class): `.ytp-ad-overlay-close-button` clicked directly in `evaluate()`.
 
-## Why seek-skip instead of click
+## Hard-won lessons (do not regress)
 
-YouTube's skip button handler checks `event.isTrusted`. Events created with `new MouseEvent()` from a content script always have `isTrusted: false` and are silently rejected. Setting `video.currentTime` is a plain DOM property assignment — no event, no trust check.
+- **Never dispatch synthetic MouseEvents with coordinates** (`clientX/clientY` chains). Historically caused confusion and adds no value; plain `element.click()` + seek covers everything.
+- **Never gate seeking on loose selectors** like `.ytp-ad-module` — that element exists even with no ad, and a false positive would seek the user's actual video. Only trust `#movie_player.ad-showing`.
+- **The "ad page" after a seek-skip is YouTube's in-player end card**, not the advertiser's site. Dismiss it by re-attempting (click Skip on the end card) every 500ms until `ad-showing` clears.
+- **No long cooldowns.** A 4s cooldown between attempts made the extension feel slower than a human. 500ms throttle is the right balance.
 
 ## Key constants (constants.js)
 
@@ -41,10 +41,8 @@ YouTube's skip button handler checks `event.isTrusted`. Events created with `new
 |----------|---------|---------|
 | `SKIP_SELECTORS` | array | CSS selectors for the skip button, tried in order |
 | `COUNTDOWN_PATTERNS` | regex array | Text patterns that mean "not yet clickable" |
-| `AD_SELECTORS` | array | Selectors that confirm an ad is playing |
-| `CLICK_DELAY_MS` | 300 | Wait before firing skip (mimics human reaction) |
-| `CLICK_COOLDOWN_MS` | 4000 | Block re-clicking after a failed attempt |
-| `CLICK_VERIFY_DELAY_MS` | 2000 | Wait before verifying skip succeeded |
+| `ATTEMPT_INTERVAL_MS` | 500 | Min gap between skip attempts during ad state |
+| `CLICK_VERIFY_DELAY_MS` | 1200 | Recheck delay after an attempt (retry or count) |
 | `OBSERVER_DEBOUNCE_MS` | 80 | Debounce for MutationObserver callbacks |
 
 ## When YouTube breaks the extension

@@ -5,6 +5,34 @@ When YouTube changes its UI and skipping breaks, update `constants.js` and add a
 
 ---
 
+## [1.0.5] — 2026-07-12
+
+### Changed — complete skip-engine rewrite for human-speed skipping
+
+**Corrected diagnosis from v1.0.4**
+- The "ad page" seen after skipping was YouTube's in-player static END CARD, not the advertiser's website — no navigation ever happened
+- The real problem: seek-only skipping let the ad "complete", which shows the end card and dwells there; combined with the 4-second cooldown and the 300ms click delay, skipping felt much slower than a human click
+
+**New strategy (both methods fire together, retry every 500ms):**
+1. Click the Skip button the moment it exists via plain `element.click()` — dispatches directly to that element only (no coordinates), exactly like a human click, cannot hit the ad
+2. Seek the ad video to its end simultaneously — kills the ad even DURING the 5s countdown before the skip button appears, and handles unskippable ads
+3. While the player stays in ad state (end card, "Ad 2 of 2" pods), re-attempt every 500ms — no more 4-second dead time
+
+**Safety improvement**
+- Seeking is now gated strictly on the player's `ad-showing` class (`#movie_player.ad-showing`) — the extension can never seek the actual video
+- Removed `AD_SELECTORS` presence check (`.ytp-ad-module` exists even with no ad → false positives)
+
+**Counting**
+- One ad break (pod of 1–2 ads) now counts as ONE skip, incremented only after the player fully exits ad state
+
+### Removed
+- 300ms `CLICK_DELAY_MS` pre-click wait (instant action instead)
+- 4000ms `CLICK_COOLDOWN_MS` (replaced by 500ms `ATTEMPT_INTERVAL_MS` throttle)
+- `AD_SELECTORS` array (unsafe ad detection)
+- Overlay banner ads still handled: `.ytp-ad-overlay-close-button` clicked directly
+
+---
+
 ## [1.0.4] — 2026-07-12
 
 ### Fixed
