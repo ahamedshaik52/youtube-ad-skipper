@@ -5,6 +5,31 @@ When YouTube changes its UI and skipping breaks, update `constants.js` and add a
 
 ---
 
+## [1.0.4] — 2026-07-12
+
+### Fixed
+
+**Bug — Extension was clicking the ad, not the skip button (ad URL opened instead of skipping)**
+- Root cause: `new MouseEvent('click', {clientX, clientY})` dispatches events at screen coordinates
+- YouTube's ad overlay sits on top of the skip button and intercepts ALL coordinate-based pointer/mouse events before they reach the skip button
+- This registered every skip attempt as an "ad click" → navigated to the advertiser's URL
+- Fix: removed the entire synthetic MouseEvent dispatch chain from `performClick()`
+
+**Removed — dangerous synthetic mouse event chain**
+- `pointerover`, `pointerenter`, `mouseover`, `mouseenter`, `pointermove`, `mousemove`, `pointerdown`, `mousedown`, `pointerup`, `mouseup`, `click` dispatched at button coordinates → DELETED
+- These events were the cause of accidental ad navigation
+
+**Kept — safe skip methods only**
+- `trySeekSkip()`: sets `video.currentTime = video.duration - 0.1` (no events, no coordinates, no overlay intercept)
+- Overlay/banner ads: direct `btn.click()` with no coordinates (only used for `.ytp-ad-overlay-close-button`)
+- `video.paused` check removed from `trySeekSkip()` — seek works even while buffering
+
+### Changed
+- `trySeekSkip()` no longer requires `!video.paused` — works during buffering too
+- Added `isOverlayAd()` logic inline to distinguish banner-close from video-skip
+
+---
+
 ## [1.0.3] — 2026-06-23
 
 ### Fixed

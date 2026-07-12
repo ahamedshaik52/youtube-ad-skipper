@@ -1,5 +1,5 @@
 // ============================================================
-// content.js — Core skip logic for YouTube Ad Skipper v1.0.3
+// content.js — Core skip logic for YouTube Ad Skipper v1.0.4
 // Injected into every youtube.com tab by the manifest.
 // ============================================================
 
@@ -227,57 +227,53 @@
 
   function performClick(scheduledBtn) {
     if (!isEnabled) return;
-
     if (!isAdPlaying()) {
       log('Ad ended naturally before click fired — no action needed.');
       return;
     }
 
     const btn = findSkipButton() || scheduledBtn;
+    if (!btn) {
+      log('No skip button at click time — aborting.');
+      return;
+    }
 
-    log(`Firing skip... (button: ${btn ? btn.className.split(' ').slice(0,2).join('.') : 'none'})`);
+    // Overlay/banner ads (the "X" close button on bottom banners while video plays).
+    // These are not video-seeking targets — just close the overlay directly.
+    if (btn.closest('.ytp-ad-overlay-close-button') || btn.matches('.ytp-ad-overlay-close-button')) {
+      log('Overlay ad — closing directly.');
+      try { btn.click(); } catch (_) {}
+      clickCooldownUntil = Date.now() + CLICK_COOLDOWN_MS;
+      setTimeout(verifySkip, CLICK_VERIFY_DELAY_MS);
+      return;
+    }
 
-    // Method 1 (primary): seek the ad video to its end.
-    // This bypasses the isTrusted restriction entirely — no event dispatch needed.
-    trySeekSkip();
-
-    // Method 2 (fallback): dispatch full pointer+mouse event chain.
-    // YouTube's handler may still honour this on some ad types.
-    if (btn && isVisible(btn)) {
-      const rect = btn.getBoundingClientRect();
-      const cx   = rect.left + rect.width  / 2;
-      const cy   = rect.top  + rect.height / 2;
-      const eventProps = { bubbles: true, cancelable: true, view: window, detail: 1, clientX: cx, clientY: cy };
-      try {
-        ['pointerover', 'pointerenter', 'mouseover', 'mouseenter',
-         'pointermove', 'mousemove', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'
-        ].forEach(type => {
-          try { btn.dispatchEvent(new MouseEvent(type, eventProps)); } catch (_) {}
-        });
-        btn.click();
-      } catch (_) {}
-
-      const roleParent = btn.closest('[role="button"]');
-      if (roleParent && roleParent !== btn) {
-        try { roleParent.dispatchEvent(new MouseEvent('click', eventProps)); } catch (_) {}
-        try { roleParent.click(); } catch (_) {}
-      }
+    // Video ads (skippable) — seek the video to its end.
+    //
+    // WHY NOT mouse events: coordinate-based MouseEvent dispatch (clientX/Y) is
+    // intercepted by YouTube's ad overlay BEFORE the skip button receives it,
+    // which registers as an ad click and navigates to the advertiser's URL.
+    // Setting video.currentTime is a plain property write — no events, no overlay.
+    log('Video ad — seeking to end.');
+    const seeked = trySeekSkip();
+    if (!seeked) {
+      log('Seek unavailable (video not ready or no duration). Retrying after cooldown.');
     }
 
     clickCooldownUntil = Date.now() + CLICK_COOLDOWN_MS;
     setTimeout(verifySkip, CLICK_VERIFY_DELAY_MS);
   }
 
-  // Seek the playing video to its end — skips the ad without dispatching events.
-  // Works because HTMLVideoElement.currentTime is a plain property, not an event handler.
+  // Seek the playing video to its end — no events, no isTrusted issue, no ad-click risk.
   function trySeekSkip() {
     const player = document.querySelector(PLAYER_SELECTOR);
     if (!player) return false;
     const video = player.querySelector('video');
-    if (!video || video.paused) return false;
+    if (!video) return false;
     if (!isFinite(video.duration) || video.duration <= 0) return false;
-    const target = Math.max(video.duration - 0.1, video.currentTime + 0.1);
-    log(`Seek-skip: ${video.currentTime.toFixed(1)}s → ${target.toFixed(1)}s (ad duration: ${video.duration.toFixed(1)}s)`);
+    const target = video.duration - 0.1;
+    if (video.currentTime >= target) return false; // already at end
+    log(`Seek-skip: ${video.currentTime.toFixed(1)}s → ${target.toFixed(1)}s (duration: ${video.duration.toFixed(1)}s)`);
     try { video.currentTime = target; } catch (_) { return false; }
     return true;
   }
